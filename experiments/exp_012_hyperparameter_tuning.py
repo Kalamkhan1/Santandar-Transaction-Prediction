@@ -1,15 +1,17 @@
 # experiments/exp_012_hyperparameter_tuning.py
 
 """
-Experiment 8: Hyperparameter tuning for all models using Optuna.
+Experiment 12: Hyperparameter tuning for remaining models using Optuna.
 Bayesian search (TPE) on single validation set (locked meta-val).
-Meta-val is 40k rows from structural split — representative, law of large numbers.
 No CV — direct scoring on meta-val.
 
-Models tuned: XGBoost, LightGBM, RBF_NN, KNN_PLS30, KNN_PCA30, KDE_NB_tophat, GNB
+Commented out: XGBoost, LightGBM (already tuned and saved)
+Removed: RBF_NN (too slow, not worth tuning)
+
+Models tuned: KNN_PLS30, KNN_PCA30, KDE_NB_tophat, GNB
 Skipped: GenGaussian_NB (no hyperparameters — scipy auto-fits)
 
-Best params saved to data/processed/tuned_*.pkl
+Best params saved to data/processed/hyperparams/tuned_*.pkl
 """
 
 import sys
@@ -27,7 +29,7 @@ from src.preprocessing import (
 from src.features import FeatureEngineer
 from src.models import (
     GNBModel, KNNModel, XGBoostModel, LightGBMModel,
-    RBFNNModel, GenGaussianNBModel, KDENBModel
+    GenGaussianNBModel, KDENBModel
 )
 from src.tuning import TuningPipeline
 
@@ -40,24 +42,21 @@ FEATURE_CONFIGS = {
     'KDE_NB_tophat':    {},
     'KNN_PLS30':        {'row_stats': 'basic'},
     'KNN_PCA30':        {},
-    'XGBoost':          {'row_stats': 'full', 'freq': True,
-                         'group_agg': True, 'n_groups': 10,
-                         'row_rank_stats': True},
-    'LightGBM':         {'row_stats': 'full', 'freq': True,
-                         'group_agg': True, 'n_groups': 10,
-                         'row_rank_stats': True},
-    'RBF_NN':           {'squared': True, 'gauss_distance': True},
+    # 'XGBoost':          {'row_stats': 'full', 'freq': True,
+    #                      'group_agg': True, 'n_groups': 10,
+    #                      'row_rank_stats': True},
+    # 'LightGBM':         {'row_stats': 'full', 'freq': True,
+    #                      'group_agg': True, 'n_groups': 10,
+    #                      'row_rank_stats': True},
 }
 
-SMOTE_MODELS = {'XGBoost', 'LightGBM'}
-UNDERSAMPLE_MODELS = {'GNB', 'KNN_PLS30', 'KNN_PCA30', 'XGBoost',
-                       'LightGBM', 'GenGaussian_NB', 'KDE_NB_tophat'}
+SMOTE_MODELS = set()  # trees commented out, none of remaining need SMOTE
+UNDERSAMPLE_MODELS = {'GNB', 'KNN_PLS30', 'KNN_PCA30', 'KDE_NB_tophat'}
 KDE_SUBSAMPLE_PER_CLASS = 5000
 
 N_TRIALS = {
-    'XGBoost':       60,
-    'LightGBM':      60,
-    'RBF_NN':        30,
+    # 'XGBoost':       60,
+    # 'LightGBM':      60,
     'KNN_PLS30':     25,
     'KNN_PCA30':     25,
     'KDE_NB_tophat': 15,
@@ -68,7 +67,6 @@ N_TRIALS = {
 # ====================== HELPERS ======================
 
 def prepare_data(name, X_train_sc, y_train):
-    """Data prep per model (same as exp_004)."""
     X_tr = X_train_sc.copy()
     y_tr = y_train.copy()
 
@@ -91,7 +89,6 @@ def prepare_data(name, X_train_sc, y_train):
 
 
 def apply_features(name, X_tr, y_tr, X_val):
-    """Apply feature engineering, return transformed train and val."""
     fe = FeatureEngineer(FEATURE_CONFIGS.get(name, {}))
     X_tr_fe = fe.fit_transform(X_tr, y_tr)
     X_val_fe = fe.transform(X_val)
@@ -107,53 +104,37 @@ def suggest_gnb(trial):
     return {'var_smoothing': trial.suggest_float('var_smoothing', 1e-11, 1e-2, log=True)}
 
 
-def make_xgb_factory(params):
-    return XGBoostModel(**params)
-
-def suggest_xgb(trial):
-    return {
-        'n_estimators': trial.suggest_int('n_estimators', 300, 1000),
-        'max_depth': trial.suggest_int('max_depth', 3, 12),
-        'learning_rate': trial.suggest_float('learning_rate', 0.005, 0.3, log=True),
-        'subsample': trial.suggest_float('subsample', 0.6, 1.0),
-        'colsample_bytree': trial.suggest_float('colsample_bytree', 0.6, 1.0),
-        'reg_alpha': trial.suggest_float('reg_alpha', 1e-4, 10, log=True),
-        'reg_lambda': trial.suggest_float('reg_lambda', 1e-4, 10, log=True),
-        'min_child_weight': trial.suggest_int('min_child_weight', 1, 10),
-    }
-
-
-def make_lgbm_factory(params):
-    return LightGBMModel(**params)
-
-def suggest_lgbm(trial):
-    return {
-        'n_estimators': trial.suggest_int('n_estimators', 300, 1000),
-        'max_depth': trial.suggest_int('max_depth', 3, 12),
-        'learning_rate': trial.suggest_float('learning_rate', 0.005, 0.3, log=True),
-        'num_leaves': trial.suggest_int('num_leaves', 20, 500),
-        'subsample': trial.suggest_float('subsample', 0.6, 1.0),
-        'colsample_bytree': trial.suggest_float('colsample_bytree', 0.6, 1.0),
-        'min_child_samples': trial.suggest_int('min_child_samples', 5, 100),
-        'reg_alpha': trial.suggest_float('reg_alpha', 1e-4, 10, log=True),
-        'reg_lambda': trial.suggest_float('reg_lambda', 1e-4, 10, log=True),
-    }
-
-
-def make_rbf_factory(params):
-    return RBFNNModel(
-        n_rbf=params['n_rbf'],
-        epochs=params['epochs'],
-        lr=params['lr'],
-        pos_weight=params.get('pos_weight', 9.0),
-        seed=42)
-
-def suggest_rbf(trial):
-    return {
-        'n_rbf': trial.suggest_int('n_rbf', 128, 2048, step=128),
-        'lr': trial.suggest_float('lr', 1e-4, 1e-2, log=True),
-        'epochs': trial.suggest_int('epochs', 50, 200, step=25),
-    }
+# def make_xgb_factory(params):
+#     return XGBoostModel(**params)
+#
+# def suggest_xgb(trial):
+#     return {
+#         'n_estimators': trial.suggest_int('n_estimators', 300, 1000),
+#         'max_depth': trial.suggest_int('max_depth', 3, 12),
+#         'learning_rate': trial.suggest_float('learning_rate', 0.005, 0.3, log=True),
+#         'subsample': trial.suggest_float('subsample', 0.6, 1.0),
+#         'colsample_bytree': trial.suggest_float('colsample_bytree', 0.6, 1.0),
+#         'reg_alpha': trial.suggest_float('reg_alpha', 1e-4, 10, log=True),
+#         'reg_lambda': trial.suggest_float('reg_lambda', 1e-4, 10, log=True),
+#         'min_child_weight': trial.suggest_int('min_child_weight', 1, 10),
+#     }
+#
+#
+# def make_lgbm_factory(params):
+#     return LightGBMModel(**params)
+#
+# def suggest_lgbm(trial):
+#     return {
+#         'n_estimators': trial.suggest_int('n_estimators', 300, 1000),
+#         'max_depth': trial.suggest_int('max_depth', 3, 12),
+#         'learning_rate': trial.suggest_float('learning_rate', 0.005, 0.3, log=True),
+#         'num_leaves': trial.suggest_int('num_leaves', 20, 500),
+#         'subsample': trial.suggest_float('subsample', 0.6, 1.0),
+#         'colsample_bytree': trial.suggest_float('colsample_bytree', 0.6, 1.0),
+#         'min_child_samples': trial.suggest_int('min_child_samples', 5, 100),
+#         'reg_alpha': trial.suggest_float('reg_alpha', 1e-4, 10, log=True),
+#         'reg_lambda': trial.suggest_float('reg_lambda', 1e-4, 10, log=True),
+#     }
 
 
 def make_knn_pls_factory(params):
@@ -199,9 +180,8 @@ def suggest_kde(trial):
 
 
 TUNING_MODELS = {
-    'XGBoost':       (make_xgb_factory, suggest_xgb),
-    'LightGBM':      (make_lgbm_factory, suggest_lgbm),
-    'RBF_NN':        (make_rbf_factory, suggest_rbf),
+    # 'XGBoost':       (make_xgb_factory, suggest_xgb),
+    # 'LightGBM':      (make_lgbm_factory, suggest_lgbm),
     'KNN_PLS30':     (make_knn_pls_factory, suggest_knn_pls),
     'KNN_PCA30':     (make_knn_pca_factory, suggest_knn_pca),
     'KDE_NB_tophat': (make_kde_factory, suggest_kde),
@@ -212,7 +192,7 @@ TUNING_MODELS = {
 # ====================== 1. LOAD + SPLIT DATA ======================
 
 print("=" * 85)
-print("EXP 012: Hyperparameter tuning (Optuna, single validation set)")
+print("EXP 012: Hyperparameter tuning — remaining models (Optuna)")
 print("=" * 85)
 
 splitter = DataSplitter(
@@ -234,6 +214,8 @@ print(f"  X_test_sc:  {X_test_sc.shape}  y_test:  {y_test.shape}")
 
 # ====================== 2. TUNE EACH MODEL ======================
 
+os.makedirs('data/processed/hyperparams', exist_ok=True)
+
 all_best_params = {}
 
 for model_name in TUNING_MODELS:
@@ -243,28 +225,15 @@ for model_name in TUNING_MODELS:
     print(f"  PREPARING: {model_name}")
     print(f"{'=' * 70}")
 
-    # prepare data
     X_tr, y_tr = prepare_data(model_name, X_train_sc, y_train)
     print(f"  Training data: {X_tr.shape}  "
           f"class 0={int((y_tr==0).sum())}  class 1={int((y_tr==1).sum())}")
 
-    # apply feature engineering
     X_tr_fe, X_val_fe = apply_features(model_name, X_tr, y_tr, X_test_sc)
     print(f"  Features: {X_tr_fe.shape[1]}")
 
-    # get factory and suggest functions
     model_factory, suggest_params = TUNING_MODELS[model_name]
 
-    # inject pos_weight for RBF_NN
-    if model_name == 'RBF_NN':
-        pos_weight = (y_tr == 0).sum() / max((y_tr == 1).sum(), 1)
-        def factory_with_pw(params, _pw=pos_weight, _mf=model_factory):
-            params = dict(params)
-            params['pos_weight'] = _pw
-            return _mf(params)
-        model_factory = factory_with_pw
-
-    # create and run tuner
     tuner = TuningPipeline(seed=42, plot_dir='src/plots', scoring='auc_prob')
     tuner.add(
         name=model_name,
@@ -274,12 +243,11 @@ for model_name in TUNING_MODELS:
     )
     tuner.run(X_tr_fe, y_tr, X_val_fe, y_test)
 
-    # save results
     best_params = tuner.get_best_params()[model_name]
     all_best_params[model_name] = best_params
 
     safe_name = model_name.lower().replace(' ', '_')
-    tuner.tuners[0].save(f'data/processed/tuned_{safe_name}.pkl')
+    tuner.tuners[0].save(f'data/processed/hyperparams/tuned_{safe_name}.pkl')
     tuner.tuners[0].plot()
 
     elapsed = time.time() - t0
@@ -297,4 +265,4 @@ for model_name, params in all_best_params.items():
     for k, v in params.items():
         print(f"    {k:30s} = {v}")
 
-print(f"\n  Saved to data/processed/tuned_*.pkl")
+print(f"\n  Saved to data/processed/hyperparams/tuned_*.pkl")
