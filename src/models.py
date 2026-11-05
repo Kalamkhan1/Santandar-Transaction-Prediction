@@ -151,7 +151,6 @@ class LightGBMModel(BaseModel):
 
 
 # ====================== 5. RBF Neural Network ======================
-
 class _RBFLayer(nn.Module):
     def __init__(self, n_input, n_rbf, X_init):
         super().__init__()
@@ -168,6 +167,17 @@ class _RBFLayer(nn.Module):
         return torch.exp(-d2 / (2 * sigma2))
 
 
+class _RBFNet(nn.Module):
+    """Module-level class so pickle can find it."""
+    def __init__(self, n_input, n_rbf, X_init):
+        super().__init__()
+        self.rbf = _RBFLayer(n_input, n_rbf, X_init)
+        self.output = nn.Linear(n_rbf, 1)
+
+    def forward(self, x):
+        return self.output(self.rbf(x)).squeeze(-1)
+
+
 class RBFNNModel(BaseModel):
     name = 'RBF_NN'
 
@@ -180,30 +190,13 @@ class RBFNNModel(BaseModel):
         self.pos_weight = pos_weight
         self.seed = seed
         self.model = None
-        self._n_input = None
-
-    def _build_model(self, X_init):
-        n_input = X_init.shape[1]
-        rbf = _RBFLayer(n_input, self.n_rbf, X_init)
-        output = nn.Linear(self.n_rbf, 1)
-
-        class _Net(nn.Module):
-            def __init__(self):
-                super().__init__()
-                self.rbf = rbf
-                self.output = output
-
-            def forward(self, x):
-                return self.output(self.rbf(x)).squeeze(-1)
-
-        return _Net()
 
     def fit(self, X, y):
         torch.manual_seed(self.seed)
         X_t = torch.FloatTensor(X)
         y_t = torch.FloatTensor(y)
 
-        self.model = self._build_model(X)
+        self.model = _RBFNet(X.shape[1], self.n_rbf, X)
         optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
         criterion = nn.BCEWithLogitsLoss(
             pos_weight=torch.tensor([self.pos_weight]))
@@ -224,7 +217,6 @@ class RBFNNModel(BaseModel):
         with torch.no_grad():
             scores = torch.sigmoid(self.model(torch.FloatTensor(X))).numpy()
         return scores
-
 
 # ====================== 6. GenGaussian NB ======================
 

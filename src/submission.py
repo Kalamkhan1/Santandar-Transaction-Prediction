@@ -117,12 +117,13 @@ class Submitter:
             'threshold': threshold,
         })
 
-    def submit_scores(self, name, scores, test_ids, threshold):
-        """
-        Submit raw scores directly (e.g., from NN training loop).
-        Useful when the model isn't a class with predict_proba.
-        """
-        preds = (np.asarray(scores) >= threshold).astype(int)
+    def submit_scores(self, name, scores, test_ids, threshold=None):
+        """Submit raw scores. If already binary, threshold is just metadata."""
+        preds = np.asarray(scores)
+        if threshold is not None:
+            preds = (preds >= threshold).astype(int)
+        else:
+            preds = preds.astype(int)
         return self._save(name, preds, test_ids, {
             'model_type': 'raw_scores',
             'threshold': threshold,
